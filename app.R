@@ -14,15 +14,15 @@ library(purrr)
 # 1) Load & prepare spatial data
 # -------------------------------
 # LSOA boundaries (change the path and the join field name to match your file)
-lsoa_shapes <- st_read(here("Data","map_data.shp")) 
+map_data <- st_read(here("Data","map_data.shp")) 
 
 #check geometry exists - should return FALSE
 
-any(is.na(sf::st_geometry(lsoa_shapes)))
+any(is.na(sf::st_geometry(map_data)))
 
 # check CRS
 
-sf::st_crs(lsoa_shapes)
+sf::st_crs(map_data)
 
 
 
