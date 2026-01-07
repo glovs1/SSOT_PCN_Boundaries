@@ -1,0 +1,9 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+Outputs/
+Data/pcn_lsoa_patient_distribution.csv
+app_0.R
+Scripts/Step2_CreateShpFileLSOA.R
+Scripts/Step3_App.R
