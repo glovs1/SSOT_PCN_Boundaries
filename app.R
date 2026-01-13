@@ -628,7 +628,7 @@ server <- function(input, output, session) {
         addPolygons(
           data        = polys0,
           fillColor   = ~color,          # use palette for fill
-          fillOpacity = 0.90,            # make fill visible
+          fillOpacity = 0.20,            # make fill visible
           color       = ~stroke_col,     # adaptive border
           weight      = ~stroke_weight,  # thicker for lighter fills
           opacity     = 1,
@@ -701,7 +701,7 @@ server <- function(input, output, session) {
         addPolygons(
           data        = polys,
           fillColor   = ~color,
-          fillOpacity = 0.50,
+          fillOpacity = 0.20,
           color       = ~stroke_col,
           weight      = ~stroke_weight,
           opacity     = 1,
