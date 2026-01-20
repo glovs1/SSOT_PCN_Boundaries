@@ -10,6 +10,25 @@ library(shinyBS)
 library(stringr)
 library(purrr)
 
+
+# ----------------------------------
+# 0) Set directory for ML logo
+# ----------------------------------
+
+register_assets <- function() {
+  assets_dir <- here::here("www")
+  if (dir.exists(assets_dir)) {
+    shiny::addResourcePath("assets", assets_dir)
+  } else {
+    warning("Assets directory not found: ", assets_dir)
+  }
+}
+register_assets()
+
+
+
+
+
 # -------------------------------
 # 1) Load & prepare spatial data
 # -------------------------------
@@ -27,19 +46,10 @@ sf::st_crs(map_data)
 
 
 # -----------------------------------------------------------
-# 2) Load SSOT patient data and recode SUB_ICB_LOCATION_NAME
+# 2) Load SSOT patient data
 # -----------------------------------------------------------
 
 SSOT_data <- read.csv(here("Outputs","SSOT_data.csv"))
-
-
-
-
-
-# --------------------------------------------------------------------------------------------------------------------
-# 3) Build nested colors (PCNs within Sub‑ICBs) using data frames - uses RColorBrewer
-# purrr is the tidyverse package for iteration, list-processing, mapping functions over objects - used here for map()
-# --------------------------------------------------------------------------------------------------------------------
 
 
 # --------------------------------------
@@ -49,77 +59,90 @@ pcn_map <- map_data |>
   st_drop_geometry() |>
   distinct(Sub_ICB, PCN_NAME)
 
-# -------------------------------
-# 3B) Define per-SubICB palette selections (sequential)
-#    Keys must match SUB_ICB_LOCATION_NAME exactly
-# -------------------------------
-subicb_palette_map <- c(
-  "Stoke-on-Trent" = "Greens",
-  "North Staffordshire" = "Purples",
-  "Cannock Chase" = "Oranges",
-  "East Staffordshire" = "RdPu",
-  "Stafford and Surrounds" = "Greys",
-  "South East Staffs and Seisdon Peninsular" = "Blues"
-)
 
-# Fallback if a Sub-ICB isn’t in subicb_palette_map
-fallback_palette <- "Set3"  # or choose a neutral sequential like "Greys"
+# --------------------------------------
+# 3D_FIXED) Load fixed PCN colours from CSV (clean join, stable fields)
+# --------------------------------------
 
-# --------------------------------------------------------------------------------------------------------------------------------------------------------------
-# 3C) Helper: generate n colors from a brewer sequential palette. 
-#    Handles n > brewer limit using colorRampPalette - it gives a scale of colours that complement the chosen colour ramp, even if you need additional colours.
-#    sequential max sizes vary; 9 is common in RColorBrewer
-#   Function inputs = pal_name (the name of a sequential colour palette - in this case subicb_palette_map), n = num of colours in final palette
-#   max_n - finds the palettes max supported size (brewer.pal.info is a df in RColorBrewer listing all palettes and max number of colors they support)
-#   base - brewer.pal returns the num of colours between 3 and palettes max - the min(max_n, max(3_n) makes sure colours don't exceed max if max_n > palette)
-#   colorRampPalette(base) (n) - smoothly interpolates to get exactly n colours
-#   output is a character vector of hex colours
-# --------------------------------------------------------------------------------------------------------------------------------------------------------------
+`%||%` <- function(a,b) if (is.null(a)) b else a
 
-make_seq_palette <- function(pal_name, n) {
-  max_n <- max(brewer.pal.info[pal_name, "max"])
-  base <- brewer.pal(min(max_n, max(3, n)), pal_name)
-  colorRampPalette(base)(n)
+# Validate hex
+is_hex <- function(x) {
+  grepl("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$", x %||% "", perl = TRUE)
 }
 
-# -------------------------------------------
-# 3D) Build colors per Sub-ICB using the map
-# Create a df(pcn_palette_df) where each row of pcn_map gets assigned a colour but
-# colours are assigned separately for each SUB_ICB_LOCATION_NAME,
-# each ICB can have its own palette,
-# palettes can be sequential (RColorBrewer) or fall back to a default,
-# palettes are expanded smoothly to match the number of rows in that group,
-# colours are reversed (via rev()) so high → low or low → high ordering flips.
-#
-# group_split divides pcn_map into a list of data frames - one df per sub_icb_Location_Name and each df goes through next steps independendly
-# map_df is from purrr and loops over the list of data frames, runs the subsequent code on each df and then binds them back together into a single df
-# subicb - the subicb in each individual df is the same so just take the name from the first row
-# pal_name - look up the palette for that subicb from the subicb_palette_map - if it doesn't have one use the fallback_palette
-# n - takes the number of rows in the data frame i.e. how many pcns are in each subicb
-# pal - building the colour palette - if the pal_name is valid use the make_seq_palette otherwise use fallback
-# reverse the colour palette so stronger colours are first - so if subicb has 4 pcns it'll take the darkest 4 colours in the sequential colour palette 
-# df - return the modified df - map_df() binds all the separate df together
-# -------------------------------------------
+# Build the distinct PCN list from the map (keys we will join on)
+pcn_map <- map_data |>
+  sf::st_drop_geometry() |>
+  dplyr::distinct(Sub_ICB, PCN_NAME)
+
+# ---- Load & normalise your colour file ----
+pcn_colors_path <- here::here("Data", "pcn_colours.csv")
+if (!file.exists(pcn_colors_path)) {
+  stop(sprintf("Cannot find file: %s", pcn_colors_path))
+}
+
+pcn_colors_raw <- read.csv(pcn_colors_path, stringsAsFactors = FALSE, check.names = FALSE)
+
+# Normalise column names to our canonical: Sub_ICB, PCN_NAME, color
+# Accepts 'PCN_Name' or 'PCN_NAME', and 'Colour' (UK) or 'Color' (US)
+pcn_colors <- pcn_colors_raw |>
+  dplyr::rename(
+    Sub_ICB  = dplyr::any_of(c("Sub_ICB")),
+    PCN_NAME = dplyr::any_of(c("PCN_NAME","PCN_Name")),
+    color    = dplyr::any_of(c("Color","Colour"))
+  ) |>
+  dplyr::mutate(
+    Sub_ICB  = trimws(Sub_ICB),
+    PCN_NAME = trimws(PCN_NAME),
+    color    = toupper(trimws(color))
+  )
+
+# Check required columns are present after rename
+missing_cols <- setdiff(c("Sub_ICB","PCN_NAME","color"), names(pcn_colors))
+if (length(missing_cols) > 0) {
+  stop(sprintf(
+    "pcn_colours.csv is missing required columns (after normalisation): %s",
+    paste(missing_cols, collapse = ", ")
+  ))
+}
+
+# Validate hex & drop bad rows (we'll fill them later or fail loudly if you want)
+bad_hex <- which(!is_hex(pcn_colors$color))
+if (length(bad_hex) > 0) {
+  warning(sprintf(
+    "Dropping %d rows with invalid hex codes in pcn_colors.csv: %s",
+    length(bad_hex),
+    paste(pcn_colors$PCN_NAME[bad_hex], collapse = "; ")
+  ))
+  pcn_colors <- pcn_colors[-bad_hex, , drop = FALSE]
+}
+
+# Warn on duplicates in the colour file for the same (Sub_ICB, PCN_NAME)
+#dups <- pcn_colors |>
+#  dplyr::count(Sub_ICB, PCN_NAME) |>
+#  dplyr::filter(n > 1)
+#if (nrow(dups) > 0) {
+#  warning(
+#    "Duplicate colour rows found in pcn_colors.csv for:\n",
+#    paste(apply(dups, 1, function(r) paste0("  - ", r[["Sub_ICB"]], " / ", r[["PCN_NAME"]], " (", r[["n"]], ")")), collapse = "\n"),
+#    "\nKeeping the first occurrence for each."
+#  )
+#  pcn_colors <- pcn_colors |>
+#    dplyr::group_by(Sub_ICB, PCN_NAME) |>
+#    dplyr::slice(1) |>
+#    dplyr::ungroup()
+#}
+
+# ---- Join fixed colours by BOTH keys (no .x/.y), keep only needed fields ----
 pcn_palette_df <- pcn_map |>
-  group_split(Sub_ICB) |>
-  map_df(function(df) {
-    subicb <- df$Sub_ICB[1]
-    pal_name <- subicb_palette_map[[subicb]]
-    if (is.null(pal_name)) pal_name <- fallback_palette
-    
-    n <- nrow(df)
-    # For sequential brewer palettes, prefer Greens/Purples/etc.
-    # If fallback is "Set3" (qualitative), still ok; just extends.
-    pal <- if (pal_name %in% rownames(brewer.pal.info)) {
-      make_seq_palette(pal_name, n)
-    } else {
-      # In case pal_name is not a valid brewer palette string
-      colorRampPalette(brewer.pal(8, fallback_palette))(n)
-    }
-    
-    df$color <- rev(pal)
-    df
-  })
+  dplyr::left_join(
+    pcn_colors[, c("Sub_ICB", "PCN_NAME", "color")],
+    by = c("Sub_ICB", "PCN_NAME")
+  )
+
+
+
 
 # --- Helpers for grouped UI (place after pcn_map is created) ---
 safe_id <- function(x) gsub("[^A-Za-z0-9]", "_", x)
@@ -160,9 +183,6 @@ build_union <- function(pcns, threshold) {
 }
 
 
-# Sum patients for the same filter used in build_union()
-
-
 
 library(scales)  # for comma formatting
 
@@ -193,20 +213,24 @@ compute_pcn_patients <- function(pcns, threshold, patient_col = "Patients") {
 }
 
 
-  
 
-
-
+ensure_patients_col <- function(sf_obj) {
+  if (!"patients" %in% names(sf_obj)) sf_obj$patients <- NA_integer_
+  sf_obj
+}
 
 
 
 # Create grouped HTML legend (Sub‑ICB -> list of PCNs with swatches)
+
+
 make_grouped_legend <- function(pal_df) {
   groups <- split(pal_df, pal_df$Sub_ICB)
   
   container <- tags$div(
     style = "background:white;padding:10px 12px;border-radius:4px;
-             box-shadow:0 1px 4px rgba(0,0,0,0.2);max-height:320px;overflow:auto;",
+             box-shadow:0 1px 4px rgba(0,0,0,0.2);max-height:320px;overflow:auto;
+             z-index:1000; position:relative;",   # position:relative for the handle
     tags$div(style="font-weight:600;margin-bottom:6px;", "PCNs by Sub‑ICB"),
     lapply(groups, function(df) {
       tags$div(
@@ -226,42 +250,16 @@ make_grouped_legend <- function(pal_df) {
           })
         )
       )
-    })
+    }),
+    # --- resize handle (bottom-right) ---
+    tags$div(id = "pcn-legend-resize", style = "
+        position:absolute; right:4px; bottom:4px; width:14px; height:14px;
+        cursor:se-resize; opacity:0.75; border-right:2px solid #999; border-bottom:2px solid #999;
+        border-radius:0;")  # diagonal corner look
   )
   
   HTML(as.character(container))
 }
-
-
-# Fit map to the bbox of an sf object
-
-
-# England WGS84 bbox (lon/lat; generous margins to include coastal edges)
-##ENGLAND_BBOX <- list(
-##  xmin = -6.0,   # west (Cornwall margin, includes Isles of Scilly)
-##  ymin = 49.9,   # south coast
-##  xmax = 2.1,    # east (beyond Kent/Norfolk)
-##  ymax = 55.9    # north (just above England's northern border)
-##)
-
-
-# Always fit the Leaflet map to England, regardless of layer data
-
-##fit_to_england <- function(map_id = "map", padding = 0.0) {
-##  bb <- ENGLAND_BBOX
-##  if (padding > 0) {
-##    bb$xmin <- bb$xmin - padding
-##    bb$ymin <- bb$ymin - padding
-##    bb$xmax <- bb$xmax + padding
-##    bb$ymax <- bb$ymax + padding
-##  }
-##  leaflet::leafletProxy(map_id) %>%
-##    leaflet::fitBounds(
-##      lng1 = bb$xmin, lat1 = bb$ymin,
-##      lng2 = bb$xmax, lat2 = bb$ymax
-##    )
-##  invisible(NULL)
-##} 
 
 
 
@@ -346,24 +344,49 @@ style_polys <- function(sf_obj, color_col = "color") {
       stroke_col = dplyr::case_when(
         lum >= 0.80 ~ "#1F1F1F",
         lum >= 0.70 ~ "#2B2B2B",
-        TRUE        ~ "#444444"
+        TRUE        ~ "#3A3A3A"
+      ),
+      fill_opacity = dplyr::case_when(
+        lum < 0.25 ~ 0.35,
+        lum < 0.45 ~ 0.40,
+        lum < 0.65 ~ 0.45,
+        TRUE       ~ 0.55
       )
     )
 }
 
 # Optional: add a subtle glow underlay to separate polygons from basemap
-add_glow_underlay <- function(map_id, sf_obj) {
+#add_glow_underlay <- function(map_id, sf_obj) {
+#  leaflet::leafletProxy(map_id) %>%
+#    leaflet::addPolygons(
+#      data = sf_obj,
+#      fillColor   = "transparent",
+#      fillOpacity = 0,
+#      color       = "#000000",
+#      weight      = 3.5,       # slightly thicker than main stroke
+#      opacity     = 0.25,
+#      smoothFactor = 0
+#    )
+#}
+
+# Swap dark glow underlay for a white halo instead
+
+
+
+add_white_halo <- function(map_id, sf_obj) {
   leaflet::leafletProxy(map_id) %>%
     leaflet::addPolygons(
-      data = sf_obj,
+      data        = sf_obj,
+      fill        = FALSE,       # ensure no fill is drawn
       fillColor   = "transparent",
       fillOpacity = 0,
-      color       = "#000000",
-      weight      = 3.5,       # slightly thicker than main stroke
-      opacity     = 0.25,
+      color       = "#FFFFFF",
+      weight      = 7.0,         # thicker than your main stroke so it peeks out
+      opacity     = 0.95,
       smoothFactor = 0
     )
 }
+
 
 
 
@@ -377,15 +400,17 @@ add_glow_underlay <- function(map_id, sf_obj) {
 
 ui <- fluidPage(
   theme = bslib::bs_theme(version = 5), # Bootstrap 5
-
+  
   titlePanel(
     div(
       style = "display:flex; align-items:center; gap:40px;",
       # Bigger, crisp logo; use SVG if available
-      tags$img(
-        src = "logo.png", alt = "NHS Midlands & Lancashire CSU",
-        style = "height:48px; width:auto; display:block;"
-      ),
+      
+      tags$img(src = "assets/logo.png",
+               alt = "NHS Midlands & Lancashire CSU",
+               style = "height:48px; width:auto; display:block;"
+               ),
+      
       tags$span(
         "SSOT PCN Boundaries by GP Patient Registration Coverage - Oct 2025",
         style = "font-weight:600;"
@@ -393,17 +418,17 @@ ui <- fluidPage(
     )
   ),
   
-
-# DEBUG BANNER — place right after titlePanel
-#tags$div(
-#  style = "background:#fff3cd;color:#664d03;border:1px solid #ffecb5;padding:6px;margin-bottom:8px;",
-#  paste("Working dir:", getwd()),
-#  tags$br(),
-#  paste("www/ contents:", paste(list.files("www"), collapse = ", ")),
-#  tags$br(),
-#  paste("logo.png exists:", file.exists("www/logo.png"))
-#),
-
+  
+  # DEBUG BANNER — place right after titlePanel
+ # tags$div(
+ #   style = "background:#fff3cd;color:#664d03;border:1px solid #ffecb5;padding:6px;margin-bottom:8px;",
+#   paste("Working dir:", getwd()),
+#    tags$br(),
+#    paste("www/ contents:", paste(list.files("www"), collapse = ", ")),
+#    tags$br(),
+#    paste("logo.png exists:", file.exists("www/logo.png"))
+#  ),
+  
   
   # Add Information box
   
@@ -450,6 +475,37 @@ ui <- fluidPage(
     }
   ")),
   
+  
+  
+  # Draggable + resizable legend overlay
+  absolutePanel(
+    id = "legend_panel",
+    class = "legend-panel",
+    draggable = TRUE,               # Shiny makes it draggable
+    top = 80, right = 20,           # initial position (like top-right control)
+    width = 340,                    # initial width
+    # height can be auto; we'll cap/max-height via CSS
+    uiOutput("legend_ui")           # we'll fill this from server
+  ),
+  
+  
+  
+  tags$style(HTML("
+  .legend-panel {
+    background: white;
+    padding: 10px 12px;
+    border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    z-index: 1000;                /* above tiles and polygons */
+    max-height: 320px;            /* same as before */
+    overflow: auto;               /* scroll contents when small */
+    resize: both;                 /* <-- resizable via bottom-right corner */
+    font-size: 12px;              /* control font size */
+    line-height: 1.25;               /* tighten vertical spacing if needed */
+  }
+")),
+  
+  
   sidebarLayout(
     sidebarPanel(
       # Scrollable content (everything except the update button)
@@ -463,7 +519,7 @@ ui <- fluidPage(
           tags$hr(),
           sliderInput("threshold", "Proportion of Patients (%):",
                       min = 50, max = 98, value = 98, step = 1),
-         # checkboxInput("show_debug", "Show diagnostics in console", value = FALSE),
+          # checkboxInput("show_debug", "Show diagnostics in console", value = FALSE),
           
           tags$hr(),
           # Display note requested
@@ -493,7 +549,7 @@ server <- function(input, output, session) {
   
   output$map <- renderLeaflet({
     leaflet(options = leafletOptions(worldCopyJump = FALSE)) %>%
-      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 0.6)) %>%
+      addProviderTiles("CartoDB.Positron", options = providerTileOptions(opacity = 1)) %>%
       setView(lng = -2.18, lat = 53.00, zoom = 6)  # Birmingham centre-ish
     # Optionally restrict panning to England:
     # setMaxBounds(lng1 = -6.0, lat1 = 49.9, lng2 = 2.1, lat2 = 55.9)
@@ -577,62 +633,63 @@ server <- function(input, output, session) {
                     "NHS England GP Registered Patients"
                   ),
                   "(Oct 2025)."
-                  ))
-        ),
-        tags$hr(),
-        tags$p(
-          strong("Contact: "), "NHS Midlands & Lancashire CSU — BI Analytics Hub.",
-          tags$br(),
-          "Email: ", tags$a(href="mailto:analytics.mlcsu@nhs.net", "analytics.mlcsu@nhs.uk")
-        )
+          ))
+      ),
+      tags$hr(),
+      tags$p(
+        strong("Contact: "), "NHS Midlands & Lancashire CSU — BI Analytics Hub.",
+        tags$br(),
+        "Email: ", tags$a(href="mailto:analytics.mlcsu@nhs.net", "analytics.mlcsu@nhs.uk")
       )
+    )
     )
   })
   
   
-  
-  
-  # 8f) Initial render: all PCNs at 100% + grouped legend
-  
-  
+  # 8f) Initial render: all PCNs at 98% + grouped legend
   observeEvent(TRUE, {
     pcns0  <- sort(unique(map_data$PCN_NAME))
     polys0 <- build_union(pcns0, 98)
     
     leafletProxy("map") %>%
-      clearControls() %>%
-      addControl(make_grouped_legend(pcn_palette_df), position = "topright")
+      clearControls()
     
     if (!is.null(polys0)) {
+      
+      
+      
       polys0 <- polys0 %>%
-        dplyr::left_join(pcn_palette_df, by = c("Sub_ICB", "PCN_NAME")) %>%
+        dplyr::left_join(pcn_palette_df, by = c("Sub_ICB", "PCN_NAME"))
+      
+      
+      # Join patient totals (safe even if column missing)
+      totals0 <- compute_pcn_patients(pcns0, threshold = 98, patient_col = "PCN_Pat")
+      polys0 <- polys0 %>%
+        dplyr::left_join(totals0, by = c("Sub_ICB", "PCN_NAME")) %>%
+        ensure_patients_col() %>%
         style_polys(color_col = "color")
-  
       
       
-    # Compute patient totals for the same filter
-    totals0 <- compute_pcn_patients(pcns0, threshold = 98, patient_col = "PCN_Pat")  # <-- change name if needed
-      
-    # Join totals onto polygons
-    polys0 <- polys0 %>%
-    left_join(totals0, by = c("Sub_ICB", "PCN_NAME")) %>%
-    style_polys(color_col = "color")  # adaptive stroke from earlier
+      # Legend based on the coloured layer (now into the overlay panel)
+      output$legend_ui <- renderUI({
+        make_grouped_legend(
+          polys0 %>% sf::st_drop_geometry() %>% dplyr::select(Sub_ICB, PCN_NAME, color)
+        )
+      })
       
       
       
-          
-      # Optional glow underlay:
-      # add_glow_underlay("map", polys0)
+      # Optional: white halo under outlines for extra separation
+      add_white_halo("map", polys0)
       
       leafletProxy("map") %>%
         addPolygons(
           data        = polys0,
-          fillColor   = ~color,          # use palette for fill
-          fillOpacity = 0.20,            # make fill visible
-          color       = ~stroke_col,     # adaptive border
-          weight      = ~stroke_weight,  # thicker for lighter fills
+          fillColor   = ~color,
+          fillOpacity = 0.6,
+          color       = ~stroke_col,
+          weight      = ~stroke_weight,
           opacity     = 1,
-          # Hover label with patient count
           label = ~sprintf(
             "%s\nPatients: %s",
             PCN_NAME, ifelse(is.na(patients), "n/a", scales::comma(patients))
@@ -664,6 +721,10 @@ server <- function(input, output, session) {
   }, once = TRUE)
   
   
+
+  
+  
+  # 8g) Update map on button click
   
   # 8g) Update map on button click
   observeEvent(input$update, {
@@ -674,34 +735,44 @@ server <- function(input, output, session) {
     
     leafletProxy("map") %>%
       clearShapes() %>%
-      clearControls() %>%
-      addControl(
-        make_grouped_legend(pcn_palette_df %>% dplyr::filter(PCN_NAME %in% selected_pcns())),
-        position = "topright"
-      )
-    
+      clearControls()
     
     if (!is.null(polys)) {
-      polys <- polys %>%
-        dplyr::left_join(pcn_palette_df, by = c("Sub_ICB", "PCN_NAME")) %>%
-        style_polys(color_col = "color")
-      
-      totals <- compute_pcn_patients(selected_pcns(), threshold = input$threshold, patient_col = "PCN_Pat")   
       
       
       polys <- polys %>%
-        left_join(totals, by = c("Sub_ICB", "PCN_NAME")) %>%
+        dplyr::left_join(pcn_palette_df, by = c("Sub_ICB", "PCN_NAME"))
+      
+      
+      # Join patient totals and style
+      totals <- compute_pcn_patients(
+        selected_pcns(),
+        threshold   = input$threshold,
+        patient_col = "PCN_Pat"     # change here if your column name differs
+      )
+      
+      polys <- polys %>%
+        dplyr::left_join(totals, by = c("Sub_ICB", "PCN_NAME")) %>%
+        ensure_patients_col() %>%
         style_polys(color_col = "color")
       
       
-      # Optional glow:
-      # add_glow_underlay("map", polys)
+      # Update the overlay legend when selection/threshold changes
+      output$legend_ui <- renderUI({
+        make_grouped_legend(
+          polys %>% sf::st_drop_geometry() %>% dplyr::select(Sub_ICB, PCN_NAME, color)
+        )
+      })
+      
+      
+      # Optional: white halo
+      add_white_halo("map", polys)
       
       leafletProxy("map") %>%
         addPolygons(
           data        = polys,
           fillColor   = ~color,
-          fillOpacity = 0.20,
+          fillOpacity = 0.6,
           color       = ~stroke_col,
           weight      = ~stroke_weight,
           opacity     = 1,
@@ -723,7 +794,6 @@ server <- function(input, output, session) {
           popup = ~paste0(
             "<b>PCN:</b> ", PCN_NAME,
             "<br><b>Sub‑ICB:</b> ", Sub_ICB,
-            
             ifelse(is.na(patients), "", paste0("<br><b>Patients:</b> ", scales::comma(patients)))
           ),
           highlightOptions = highlightOptions(weight = 4, color = "#000000", opacity = 1, bringToFront = TRUE)
@@ -732,7 +802,7 @@ server <- function(input, output, session) {
       fit_to_layer_bounds("map", polys)
       
     } else {
-      showNotification("No polygons for the selected PCNs/threshold. Try 100% or check data.", type = "message")
+      showNotification("No polygons for the selected PCNs/threshold. Try 98% or check data.", type = "message")
       fit_to_west_midlands("map")
     }
   })
@@ -742,6 +812,7 @@ server <- function(input, output, session) {
 # -------------------------------
 # 9) Launch
 # -------------------------------
+
 options(shiny.launch.browser = TRUE)
 shinyApp(ui, server)
 
