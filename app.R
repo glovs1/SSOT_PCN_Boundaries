@@ -637,7 +637,7 @@ server <- function(input, output, session) {
       ),
       tags$hr(),
       tags$p(
-        strong("Contact: "), "NHS Midlands & Lancashire CSU — BI Analytics Hub.",
+        strong("Contact: "), "Sarah Glover - NHS Midlands & Lancashire CSU — BI Analytics Hub.",
         tags$br(),
         "Email: ", tags$a(href="mailto:analytics.mlcsu@nhs.net", "analytics.mlcsu@nhs.uk")
       )
